@@ -10,8 +10,22 @@ require_once('base.php');
 
 class tag extends Base {
     const ALL_TAGS_ID = "cops:tags";
-    const TAG_COLUMNS = "tags.id as id, tags.name as name, count(*) as count";
-    const SQL_ALL_TAGS = "select {0} from tags, books_tags_link where tags.id = tag group by tags.id, tags.name order by tags.name";
+    const SQL_ALL_TAGS = 
+    	"select tags.id as id, tags.name as name, count(*) as count 
+    	 from tags 
+    		inner join books_tags_link as link on tags.id = link.tag
+    		inner join ({0}) as filter on filter.id = link.book
+    	 group by tags.id, tags.name 
+    	 order by tags.name";
+    const SQL_ALL_TAGS_BY_QUERY = 
+    	"select tags.id as id, tags.name as name, count(*) as count
+         from tags 
+    		inner join books_tags_link as link on tags.id = link.tag
+    		inner join ({0}) as filter on filter.id = link.book
+    	 where upper (tags.name) like ? 
+    	 group by tags.id, tags.name 
+    	 order by tags.name";
+    	
 
     public $id;
     public $name;
@@ -44,13 +58,13 @@ class tag extends Base {
     }
 
     public static function getAllTags() {
-        return Base::getEntryArrayWithBookNumber (self::SQL_ALL_TAGS, self::TAG_COLUMNS, array (), "Tag");
+        return Base::getEntryArrayWithBookNumber (self::SQL_ALL_TAGS, array (), "Tag");
     }
 
-    public static function getAllTagsByQuery($query, $n, $database = NULL, $numberPerPage = NULL) {
+    public static function getAllTagsByQuery($query, $n, $database = NULL, $virtualLib = NULL, $numberPerPage = NULL) {
         $columns  = "tags.id as id, tags.name as name, (select count(*) from books_tags_link where tags.id = tag) as count";
         $sql = 'select {0} from tags where upper (tags.name) like ? {1} order by tags.name';
-        list ($totalNumber, $result) = parent::executeQuery ($sql, $columns, "", array ('%' . $query . '%'), $n, $database, $numberPerPage);
+        list ($totalNumber, $result) = parent::executeFilteredQuery (self::SQL_ALL_TAGS_BY_QUERY, array ('%' . $query . '%'), $n, $database, $virtualLib, $numberPerPage);
         $entryArray = array();
         while ($post = $result->fetchObject ())
         {

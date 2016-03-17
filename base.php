@@ -7,8 +7,11 @@
  */
 
 define ("VERSION", "1.0.0RC4");
-define ("DB", "db");
+define ("DB", "db");     // url parameter for the selected database
+define ("VL", "vl");     // url parameter for the selected virtual library
 date_default_timezone_set($config['default_timezone']);
+
+require_once('virtuallib.php');
 
 
 function useServerSideRendering () {
@@ -185,6 +188,32 @@ function str_format($format) {
     }
 
     return $format;
+}
+
+/**
+ * Format strings using named parameters.
+ *
+ * This method replaces {name} in the format string with the value of $array["name"].
+ * @param string $format a format string with named parameters.
+ * @param array $array an array with named values to use as parameters.
+ */
+function str_format_n($format, $array) {
+
+	preg_match_all('/(?=\{)\{([\w\d]+)\}(?!\})/', $format, $matches, PREG_OFFSET_CAPTURE);
+	$offset = 0;
+	foreach ($matches[1] as $data) {
+		$name = $data[0];
+		if (array_key_exists($name, $array)) {
+			$format = substr_replace($format, $array[$name], $offset + $data[1] - 1, 2 + strlen($name));
+			$offset += strlen($array[$name]) - 2 - strlen($name);
+		} else {
+			// Replace not existent keys by ""
+			$format = substr_replace($format, "", $offset + $data[1] - 1, 2 + strlen($name));
+			$offset += 0 - 2 - strlen($name);
+		}
+	}
+
+	return $format;
 }
 
 /**
@@ -381,7 +410,10 @@ class LinkNavigation extends Link
 {
     public function __construct($phref, $prel = NULL, $ptitle = NULL) {
         parent::__construct ($phref, Link::OPDS_NAVIGATION_TYPE, $prel, $ptitle);
-        if (!is_null (GetUrlParam (DB))) $this->href = addURLParameter ($this->href, DB, GetUrlParam (DB));
+        if (!is_null (GetUrlParam (DB))) {
+        	$this->href = addURLParameter ($this->href, DB, GetUrlParam (DB));
+        	$this->href = addURLParameter ($this->href, VL, GetUrlParam (VL, 0));
+        }
         if (!preg_match ("#^\?(.*)#", $this->href) && !empty ($this->href)) $this->href = "?" . $this->href;
         if (preg_match ("/(bookdetail|getJSON).php/", parent::getScriptName())) {
             $this->href = "index.php" . $this->href;
@@ -395,7 +427,10 @@ class LinkFacet extends Link
 {
     public function __construct($phref, $ptitle = NULL, $pfacetGroup = NULL, $pactiveFacet = FALSE) {
         parent::__construct ($phref, Link::OPDS_PAGING_TYPE, "http://opds-spec.org/facet", $ptitle, $pfacetGroup, $pactiveFacet);
-        if (!is_null (GetUrlParam (DB))) $this->href = addURLParameter ($this->href, DB, GetUrlParam (DB));
+        if (!is_null (GetUrlParam (DB))) {
+        	$this->href = addURLParameter ($this->href, DB, GetUrlParam (DB));
+        	$this->href = addURLParameter ($this->href, VL, GetUrlParam (VL, 0));
+        }
         $this->href = parent::getScriptName() . $this->href;
     }
 }
@@ -465,7 +500,7 @@ class Entry
             }
         }
 
-        if (!is_null (GetUrlParam (DB))) $this->id = str_replace ("cops:", "cops:" . GetUrlParam (DB) . ":", $this->id);
+        if (!is_null (GetUrlParam (DB))) $this->id = str_replace ("cops:", "cops:" . GetUrlParam (DB) . ":" . GetUrlParam (VL,0) . ":", $this->id);
     }
 }
 
@@ -586,10 +621,18 @@ class Page
         if (Base::noDatabaseSelected ()) {
             $i = 0;
             foreach (Base::getDbNameList () as $key) {
-                $nBooks = Book::getBookCount ($i);
-                array_push ($this->entryArray, new Entry ($key, "cops:{$i}:catalog",
-                                        str_format (localize ("bookword", $nBooks), $nBooks), "text",
-                                        array ( new LinkNavigation ("?" . DB . "={$i}")), "", $nBooks));
+            	$j = 0;
+            	// if virtual libraries are nor enabled, getVLNameList() contains just one empty entry
+            	foreach (VirtualLib::getVLNameList($i) as $vlName) {
+            		$nBooks = Book::getBookCount ($i, $j);
+            		// Only show not-empty virtual libraries
+            		if ($nBooks > 0)
+	            		array_push ($this->entryArray, new Entry (VirtualLib::getDisplayName($key, $vlName),
+	            							"cops:{$i}:{$j}:catalog",
+	            							str_format (localize ("bookword", $nBooks), $nBooks), "text",
+	            							array ( new LinkNavigation ("?" . DB . "={$i}&" . VL . "={$j}")), "", $nBooks));
+            		$j++;
+            	}
                 $i++;
                 Base::clearDb ();
             }
@@ -625,7 +668,7 @@ class Page
             }
             $this->entryArray = array_merge ($this->entryArray, Book::getCount());
 
-            if (Base::isMultipleDatabaseEnabled ()) $this->title =  Base::getDbName ();
+            if (Base::isDatabaseArray ()) $this->title =  VirtualLib::getDisplayName();
         }
     }
 
@@ -673,7 +716,7 @@ class PageAllAuthors extends Page
     {
         $this->title = localize("authors.title");
         if (getCurrentOption ("author_split_first_letter") == 1) {
-            $this->entryArray = Author::getAllAuthorsByFirstLetter();
+            $this->entryArray = Author::getAllAuthorsFirstLetters();
         }
         else {
             $this->entryArray = Author::getAllAuthors();
@@ -897,7 +940,7 @@ class PageQueryResult extends Page
         }
         switch ($scope) {
             case self::SCOPE_BOOK :
-                $array = Book::getBooksByStartingLetter ('%' . $queryNormedAndUp, $n, NULL, $numberPerPage);
+                $array = Book::getBooksByStartingLetter ('%' . $queryNormedAndUp, $n, NULL, NULL, $numberPerPage);
                 break;
             case self::SCOPE_AUTHOR :
                 $array = Author::getAuthorsForSearch ('%' . $queryNormedAndUp);
@@ -906,7 +949,7 @@ class PageQueryResult extends Page
                 $array = Serie::getAllSeriesByQuery ($queryNormedAndUp);
                 break;
             case self::SCOPE_TAG :
-                $array = Tag::getAllTagsByQuery ($queryNormedAndUp, $n, NULL, $numberPerPage);
+                $array = Tag::getAllTagsByQuery ($queryNormedAndUp, $n, NULL, NULL, $numberPerPage);
                 break;
             case self::SCOPE_PUBLISHER :
                 $array = Publisher::getAllPublishersByQuery ($queryNormedAndUp);
@@ -921,6 +964,7 @@ class PageQueryResult extends Page
 
     public function doSearchByCategory () {
         $database = GetUrlParam (DB);
+        $virtualLib = getURLParam(VL, 0);
         $out = array ();
         $pagequery = Base::PAGE_OPENSEARCH_QUERY;
         $dbArray = array ("");
@@ -931,50 +975,65 @@ class PageQueryResult extends Page
             $dbArray = Base::getDbNameList ();
             $d = 0;
         }
-        foreach ($dbArray as $key) {
-            if (Base::noDatabaseSelected ()) {
-                array_push ($this->entryArray, new Entry ($key, DB . ":query:{$d}",
-                                        " ", "text",
-                                        array ( new LinkNavigation ("?" . DB . "={$d}")), "tt-header"));
-                Base::getDb ($d);
-            }
-            foreach (array (PageQueryResult::SCOPE_BOOK,
-                            PageQueryResult::SCOPE_AUTHOR,
-                            PageQueryResult::SCOPE_SERIES,
-                            PageQueryResult::SCOPE_TAG,
-                            PageQueryResult::SCOPE_PUBLISHER) as $key) {
-                if (in_array($key, getCurrentOption ('ignored_categories'))) {
-                    continue;
-                }
-                $array = $this->searchByScope ($key, TRUE);
-
-                $i = 0;
-                if (count ($array) == 2 && is_array ($array [0])) {
-                    $total = $array [1];
-                    $array = $array [0];
-                } else {
-                    $total = count($array);
-                }
-                if ($total > 0) {
-                    // Comment to help the perl i18n script
-                    // str_format (localize("bookword", count($array))
-                    // str_format (localize("authorword", count($array))
-                    // str_format (localize("seriesword", count($array))
-                    // str_format (localize("tagword", count($array))
-                    // str_format (localize("publisherword", count($array))
-                    array_push ($this->entryArray, new Entry (str_format (localize ("search.result.{$key}"), $this->query), DB . ":query:{$d}:{$key}",
-                                        str_format (localize("{$key}word", $total), $total), "text",
-                                        array ( new LinkNavigation ("?page={$pagequery}&query={$query}&db={$d}&scope={$key}")),
-                                        Base::noDatabaseSelected () ? "" : "tt-header", $total));
-                }
-                if (!Base::noDatabaseSelected () && $this->useTypeahead ()) {
-                    foreach ($array as $entry) {
-                        array_push ($this->entryArray, $entry);
-                        $i++;
-                        if ($i > 4) { break; };
-                    }
-                }
-            }
+        $vl = $virtualLib;
+        $vlArray = VirtualLib::getVLNameList($d);
+        $vlArray = array($vlArray[$vl]);
+        
+        foreach ($dbArray as $dbKey) {
+        	if (Base::noDatabaseSelected () && VirtualLib::isVLEnabled()) {
+        		// If virtual libraries are enabled, but no Database is selected, 
+        		// then iterate over all virtual libraries
+        		$vlArray = VirtualLib::getVLNameList($d);
+        		$vl = 0;
+        	}
+        	foreach ($vlArray as $vlKey) {	
+	            if (Base::noDatabaseSelected ()) {
+	                array_push ($this->entryArray, new Entry (VirtualLib::getDisplayName($dbKey, $vlKey), 
+	                						DB . ":query:{$d}:{$vl}",
+	                                        " ", "text",
+	                                        array ( new LinkNavigation ("?" . DB . "={$d}&" . VL . "={$vl}")), "tt-header"));
+	                Base::getDb ($d);
+	                // TODO: set current virtual library in Base Or VirtualLib
+	            }
+	            foreach (array (PageQueryResult::SCOPE_BOOK,
+	                            PageQueryResult::SCOPE_AUTHOR,
+	                            PageQueryResult::SCOPE_SERIES,
+	                            PageQueryResult::SCOPE_TAG,
+	                            PageQueryResult::SCOPE_PUBLISHER) as $key) {
+	                if (in_array($key, getCurrentOption ('ignored_categories'))) {
+	                    continue;
+	                }
+	                $array = $this->searchByScope ($key, TRUE);
+	
+	                $i = 0;
+	                if (count ($array) == 2 && is_array ($array [0])) {
+	                    $total = $array [1];
+	                    $array = $array [0];
+	                } else {
+	                    $total = count($array);
+	                }
+	                if ($total > 0) {
+	                    // Comment to help the perl i18n script
+	                    // str_format (localize("bookword", count($array))
+	                    // str_format (localize("authorword", count($array))
+	                    // str_format (localize("seriesword", count($array))
+	                    // str_format (localize("tagword", count($array))
+	                    // str_format (localize("publisherword", count($array))
+	                    array_push ($this->entryArray, new Entry (str_format (localize ("search.result.{$key}"), $this->query), DB . ":query:{$d}:{$key}:{$vl}",
+	                                        str_format (localize("{$key}word", $total), $total), "text",
+	                                        array ( new LinkNavigation ("?page={$pagequery}&query={$query}&db={$d}&vl={$vl}&scope={$key}")),
+	                                        Base::noDatabaseSelected () ? "" : "tt-header", $total));
+	                }
+	                if (!Base::noDatabaseSelected () && $this->useTypeahead ()) {
+	                    foreach ($array as $entry) {
+	                        array_push ($this->entryArray, $entry);
+	                        $i++;
+	                        if ($i > 4) { break; };
+	                    }
+	                }
+	            }
+	            $vl++;
+        	}
             $d++;
             if (Base::noDatabaseSelected ()) {
                 Base::clearDb ();
@@ -983,7 +1042,7 @@ class PageQueryResult extends Page
         return $out;
     }
 
-    public function InitializeContent ()
+	public function InitializeContent ()
     {
         $scope = getURLParam ("scope");
         if (empty ($scope)) {
@@ -1003,12 +1062,17 @@ class PageQueryResult extends Page
         // Special case when we are doing a search and no database is selected
         if (Base::noDatabaseSelected () && !$this->useTypeahead ()) {
             $i = 0;
-            foreach (Base::getDbNameList () as $key) {
+            foreach (Base::getDbNameList () as $dbKey) {
                 Base::clearDb ();
-                list ($array, $totalNumber) = Book::getBooksByQuery (array ("all" => $crit), 1, $i, 1);
-                array_push ($this->entryArray, new Entry ($key, DB . ":query:{$i}",
-                                        str_format (localize ("bookword", $totalNumber), $totalNumber), "text",
-                                        array ( new LinkNavigation ("?" . DB . "={$i}&page=9&query=" . $this->query)), "", $totalNumber));
+                $j = 0;
+                foreach (VirtualLib::getVLNameList($i) as $vlKey) {
+	                list ($array, $totalNumber) = Book::getBooksByQuery (array ("all" => $crit), 1, $i, $j, 1);
+	                array_push ($this->entryArray, new Entry (VirtualLib::getDisplayName($dbKey, $vlKey), 
+	                						DB . ":query:{$i}:{$j}",
+	                                        str_format (localize ("bookword", $totalNumber), $totalNumber), "text",
+	                                        array ( new LinkNavigation ("?" . DB . "={$i}&page=9&query=" . $this->query)), "", $totalNumber));
+	                $j++;
+                }
                 $i++;
             }
             return;
@@ -1166,12 +1230,18 @@ abstract class Base
     const PAGE_RATING_DETAIL = "23";
 
     const COMPATIBILITY_XML_ALDIKO = "aldiko";
+    
+    const SQL_SETTING = 'SELECT val FROM preferences WHERE key = "{0}"';
 
     private static $db = NULL;
 
-    public static function isMultipleDatabaseEnabled () {
+    public static function isDatabaseArray () {
         global $config;
         return is_array ($config['calibre_directory']);
+    }
+    
+    public static function isMultipleDatabaseEnabled () {
+    	return (self::isDatabaseArray () || VirtualLib::isVLEnabled());
     }
 
     public static function useAbsolutePath () {
@@ -1182,12 +1252,12 @@ abstract class Base
     }
 
     public static function noDatabaseSelected () {
-        return self::isMultipleDatabaseEnabled () && is_null (GetUrlParam (DB));
+        return self::isMultipleDatabaseEnabled() && is_null (GetUrlParam (DB));
     }
 
     public static function getDbList () {
         global $config;
-        if (self::isMultipleDatabaseEnabled ()) {
+        if (self::isDatabaseArray ()) {
             return $config['calibre_directory'];
         } else {
             return array ("" => $config['calibre_directory']);
@@ -1196,7 +1266,7 @@ abstract class Base
 
     public static function getDbNameList () {
         global $config;
-        if (self::isMultipleDatabaseEnabled ()) {
+        if (self::isDatabaseArray ()) {
             return array_keys ($config['calibre_directory']);
         } else {
             return array ("");
@@ -1205,7 +1275,7 @@ abstract class Base
 
     public static function getDbName ($database = NULL) {
         global $config;
-        if (self::isMultipleDatabaseEnabled ()) {
+        if (self::isDatabaseArray ()) {
             if (is_null ($database)) $database = GetUrlParam (DB, 0);
             if (!is_null($database) && !preg_match('/^\d+$/', $database)) {
                 return self::error ($database);
@@ -1218,7 +1288,7 @@ abstract class Base
 
     public static function getDbDirectory ($database = NULL) {
         global $config;
-        if (self::isMultipleDatabaseEnabled ()) {
+        if (self::isDatabaseArray ()) {
             if (is_null ($database)) $database = GetUrlParam (DB, 0);
             if (!is_null($database) && !preg_match('/^\d+$/', $database)) {
                 return self::error ($database);
@@ -1278,12 +1348,25 @@ abstract class Base
     public static function executeQuerySingle ($query, $database = NULL) {
         return self::getDb ($database)->query($query)->fetchColumn();
     }
+    
+    /**
+     * Executes a sql query filtered for a virtual library. The query returns a single value;
+     * 
+     * @param string $query The sql query. A {0} indicates the space to include the filter query. 
+     * @param int $database The database id.
+     * @param int $virtualLib The id of the virtual library.
+     * @return mixed The single-value result of the query.
+     */
+    public static function executeFilteredQuerySingle ($query, $database = NULL, $virtualLib = null) {
+    	$query = str_format($query, VirtualLib::getVL($database, $virtualLib)->getFilterQuery());
+    	return self::getDb ($database)->query($query)->fetchColumn();
+    }
 
     public static function getCountGeneric($table, $id, $pageId, $numberOfString = NULL) {
         if (!$numberOfString) {
             $numberOfString = $table . ".alphabetical";
         }
-        $count = self::executeQuerySingle ('select count(*) from ' . $table);
+        $count = self::executeFilteredQuerySingle ('select count(distinct ' . $table .'.id) from ' . Filter::getLinkedTable($table));
         if ($count == 0) return NULL;
         $entry = new Entry (localize($table . ".title"), $id,
             str_format (localize($numberOfString, $count), $count), "text",
@@ -1291,8 +1374,8 @@ abstract class Base
         return $entry;
     }
 
-    public static function getEntryArrayWithBookNumber ($query, $columns, $params, $category) {
-        list (, $result) = self::executeQuery ($query, $columns, "", $params, -1);
+    public static function getEntryArrayWithBookNumber ($query, $params, $category) {
+        list (, $result) = self::executeFilteredQuery($query, $params, -1);
         $entryArray = array();
         while ($post = $result->fetchObject ())
         {
@@ -1307,6 +1390,47 @@ abstract class Base
                 array ( new LinkNavigation ($instance->getUri ())), "", $post->count));
         }
         return $entryArray;
+    }
+    
+    /**
+     * Executes a sql query filtered for a virtual library.
+     * 
+     * @param string $query The sql query. A {0} indicates the space to include the filter query. 
+     * @param array $params SQL parameter
+     * @param int $n Page number
+     * @param int $database Database ID
+     * @param int $virtualLib ID of the virtual library
+     * @param int $numberPerPage Number of shown entries per page
+     * @return multitype:number PDOStatement
+     */
+    public static function executeFilteredQuery($query, $params, $n, $database = NULL, $virtualLib = NULL,$numberPerPage = NULL) {
+    	$totalResult = -1;
+    
+    	$query = str_format($query, VirtualLib::getVL($database, $virtualLib)->getFilterQuery());
+    	
+    	if (useNormAndUp ()) {
+    		$query = preg_replace("/upper/", "normAndUp", $query);
+    	}
+    
+    	if (is_null ($numberPerPage)) {
+    		$numberPerPage = getCurrentOption ("max_item_per_page");
+    	}
+    
+    	if ($numberPerPage != -1 && $n != -1)
+    	{
+    		// First check total number of results
+    		$result = self::getDb ($database)->prepare (str_format ("select count(*) from ({0})", $query));
+    		$result->execute ($params);
+    		$totalResult = $result->fetchColumn ();
+    
+    		// Next modify the query and params
+    		$query .= " limit ?, ?";
+    		array_push ($params, ($n - 1) * $numberPerPage, $numberPerPage);
+    	}
+    
+    	$result = self::getDb ($database)->prepare($query);
+    	$result->execute ($params);
+    	return array ($totalResult, $result);
     }
 
     public static function executeQuery($query, $columns, $filter, $params, $n, $database = NULL, $numberPerPage = NULL) {
@@ -1338,4 +1462,15 @@ abstract class Base
         return array ($totalResult, $result);
     }
 
+    /**
+     * Gets a calibre setting from the database.
+     * 
+     * @param string $name Name of the property
+     * @param int $database Database to query from
+     * @return string Value of the property
+     */
+    public static function getCalibreSetting($name, $database = NULL) {
+    	$query = str_format(self::SQL_SETTING, $name);
+    	return self::executeQuerySingle($query, $database);
+    }
 }
